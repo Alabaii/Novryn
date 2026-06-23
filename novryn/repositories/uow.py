@@ -26,13 +26,31 @@ D-05 требует явного ``event_type`` от сервиса, что ес
 from __future__ import annotations
 
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Mapper
 
 from novryn.db.serialization import serialize_row
 from novryn.repositories.event_repository import append_event
+
+
+async def _ensure_loaded(session: AsyncSession, row: object) -> None:
+    """Гарантировать, что атрибуты ORM-строки загружены ВНУТРИ async-контекста.
+
+    Если ``row`` — ORM-инстанс с истёкшими (expired) атрибутами (после
+    apply+flush), синхронный ``getattr`` в ``serialize_row`` спровоцировал бы
+    ленивую IO вне greenlet → ``MissingGreenlet``. Явный ``session.refresh``
+    дозагружает их здесь, в awaitable-контексте. Для ``Mapping`` — no-op
+    (значения уже материализованы, ленивой загрузки нет).
+    """
+    if isinstance(row, Mapping):
+        return
+    mapper: Mapper[Any] | None = inspect(type(row), raiseerr=False)
+    if mapper is not None and isinstance(mapper, Mapper):
+        await session.refresh(row)
 
 # Доменная мутация: применяет INSERT/UPDATE и возвращает произвольный результат.
 ApplyFn = Callable[[AsyncSession], Awaitable[Any]]
@@ -85,13 +103,22 @@ async def mutate_with_event(
     """
     async with session.begin():
         before_row = await load_row(session)
+        # Сериализуем before СРАЗУ, пока строка свежая: последующий apply (UPDATE)
+        # + flush истекает (expire) атрибуты того же ORM-инстанса, и отложенный
+        # serialize_row(before_row) дёрнул бы ленивую дозагрузку вне greenlet →
+        # MissingGreenlet. Материализуем значения в plain dict здесь и сейчас.
+        before = serialize_row(before_row) if before_row is not None else None
+
         result = await apply(session)
         # flush до снимка after: server-default'ы (created_at/updated_at) должны
         # быть материализованы, иначе after-снимок их не увидит.
         await session.flush()
         after_row = await load_row(session)
-
-        before = serialize_row(before_row) if before_row is not None else None
+        if after_row is not None:
+            # apply (UPDATE) истёк атрибуты identity-map-инстанса; явный async
+            # refresh дозагружает их ВНУТРИ greenlet, иначе sync-getattr в
+            # serialize_row дёрнул бы ленивую IO вне greenlet → MissingGreenlet.
+            await _ensure_loaded(session, after_row)
         after = serialize_row(after_row) if after_row is not None else None
 
         await append_event(
