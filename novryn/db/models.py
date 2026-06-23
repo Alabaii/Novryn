@@ -25,13 +25,16 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -44,6 +47,7 @@ _TASK_STATUS = ("INBOX", "TODO", "IN_PROGRESS", "BLOCKED", "DONE", "ARCHIVED")
 _TASK_ENERGY = ("LOW", "MEDIUM", "HIGH")
 _ATTACHMENT_TYPE = ("URL", "DOCUMENT", "PDF", "GITHUB", "GOOGLE_DOC", "OTHER")
 _SESSION_RESULT = ("COMPLETED", "PARTIAL", "ABANDONED", "INTERRUPTED")
+_EVENT_ACTOR_TYPE = ("USER", "HERMES", "SYSTEM")
 
 
 def _in_check(column: str, values: tuple[str, ...], name: str) -> CheckConstraint:
@@ -208,3 +212,48 @@ class BehaviorPattern(Base):
     updated_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class Event(Base):
+    """Запись Event Store — append-only аудит всех мутаций (PRD §8).
+
+    Несёт все 8 обязательных полей события (EVT-02) + ``schema_version`` (EVT-04).
+    Составной первичный ключ ``(id, occurred_at)`` обязателен: таблица будет
+    партиционирована ``PARTITION BY RANGE (occurred_at)`` в миграции 001 (план 03),
+    а PK партиционированной таблицы ДОЛЖЕН включать ключ партиции (RESEARCH
+    Pattern 3 / Pitfall 2). ORM фиксирует форму PK; саму директиву PARTITION BY и
+    защиту от мутаций (append-only, D-06) пишет рукописная миграция 001.
+
+    FK на events НЕ объявляются (конечная таблица аудита — RESEARCH Pattern 3).
+    """
+
+    __tablename__ = "events"
+    __table_args__ = (
+        _in_check("actor_type", _EVENT_ACTOR_TYPE, "ck_events_actor_type"),  # A4
+        # Индекс под аудит-запросы по сущности (RESEARCH Pattern 3).
+        Index(
+            "idx_events_entity",
+            "entity_type",
+            "entity_id",
+            text("occurred_at DESC"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=new_id)
+    occurred_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        primary_key=True,
+        nullable=False,
+        server_default=func.now(),
+    )
+    schema_version: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=1
+    )  # EVT-04
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_type: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)  # SYSTEM/seed
+    payload_json: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )  # {before, after} — D-01/D-02/D-03
