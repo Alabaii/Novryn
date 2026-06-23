@@ -39,3 +39,9 @@ target-version = "py312"
 
 [tool.mypy]
 strict = true
+
+# Сторонние библиотеки без type-стабов / py.typed-маркера. Игнорируем только
+# отсутствие стабов у этих модулей, не ослабляя strict для нашего кода.
+[[tool.mypy.overrides]]
+module = ["docker", "docker.*", "testcontainers.*"]
+ignore_missing_imports = true
