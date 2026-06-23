@@ -12,7 +12,9 @@ RESEARCH A3; используем 16) и отдают свежий `AsyncSession
 блокирует event loop — CLAUDE.md "What NOT to Use").
 """
 
+import asyncio
 import os
+import sys
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
@@ -23,6 +25,15 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+
+
+# asyncpg на Windows требует SelectorEventLoop, не Proactor (дефолт на win32).
+# На ProactorEventLoop ошибка из statement (триггер/CHECK) запускает
+# `Connection._cancel`, который не доходит до await → соединение виснет в
+# "another operation is in progress", отравляя весь пул. Ставим политику
+# процесс-широко ДО создания любого event loop (импорт conftest — до тестов).
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 def _docker_available() -> bool:
@@ -74,8 +85,16 @@ def database_url(postgres_container: object) -> str:
 
 @pytest_asyncio.fixture(scope="session")
 async def async_engine(database_url: str) -> AsyncIterator[AsyncEngine]:
-    """Session-scoped async engine; teardown освобождает пул соединений."""
-    engine = create_async_engine(database_url)
+    """Session-scoped async engine; teardown освобождает пул соединений.
+
+    NullPool: каждое соединение закрывается после использования и не
+    переиспользуется между тестами. Это изолирует возможные «отравленные»
+    соединения (например, после ожидаемой ошибки триггера/CHECK) — иначе
+    asyncpg-соединение из пула может остаться в состоянии «operation in progress».
+    """
+    from sqlalchemy import NullPool
+
+    engine = create_async_engine(database_url, poolclass=NullPool)
     try:
         yield engine
     finally:
@@ -108,7 +127,29 @@ async def session(
         yield s
 
 
-# TODO(план 03): добавить session-scoped фикстуру `migrated_db`, которая один раз
-# прогоняет `alembic upgrade head` против `database_url` (миграция 001 создаёт
-# таблицы/партиции/триггеры/REVOKE) ПЕРЕД интеграционными тестами планов 02–04.
-# Сейчас миграций ещё нет — фикстура-якорь намеренно не реализована.
+@pytest.fixture(scope="session")
+def migrated_db(database_url: str) -> str:
+    """Session-scoped: один раз прогнать ``alembic upgrade head`` против контейнера.
+
+    Миграция 001 (план 03) создаёт все таблицы, партиции events, append-only-триггер
+    и REVOKE под novryn_app. Интеграционные тесты планов 02–04 зависят от этой
+    фикстуры, поэтому видят полностью применённую схему.
+
+    `database_url` уже выставил `DATABASE_URL` в окружение — env.py читает его при
+    построении async-движка. Запуск синхронный (`command.upgrade`), но внутри env.py
+    использует свой собственный event loop (`asyncio.run`) поверх asyncpg-движка.
+    """
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    project_root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(project_root / "alembic.ini"))
+    # script_location в alembic.ini задан относительно корня проекта — фиксируем CWD-
+    # независимый абсолютный путь, чтобы запуск из любого каталога находил миграции.
+    cfg.set_main_option(
+        "script_location", str(project_root / "novryn" / "db" / "migrations")
+    )
+    command.upgrade(cfg, "head")
+    return database_url
