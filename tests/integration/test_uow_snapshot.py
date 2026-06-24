@@ -119,3 +119,71 @@ async def test_update_snapshot_carries_full_before_and_after(
         # ai_context_json присутствует ЦЕЛИКОМ в обоих снимках (D-03).
         assert before["ai_context_json"] == ai_ctx
         assert after["ai_context_json"] == ai_ctx
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_decoupled_from_after_identity(
+    uow_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """CR-02 регресс: before-снимок не схлопывается в after через identity-map.
+
+    На UPDATE ``load_row`` (session.get) внутри UoW возвращает ОДИН и тот же
+    identity-map-инстанс для before и after. UoW сериализует before до apply и
+    отвязывает инстанс (``session.expunge``), поэтому after грузится свежим, а
+    before нельзя задним числом «обновить». Тест падает, если эта развязка
+    снимется (before стал бы == after на изменённом поле) — прямая защита
+    аудит-инварианта Novryn.
+    """
+    task_id = new_id()
+
+    async def create(session: AsyncSession) -> None:
+        await session.execute(
+            insert(Task).values(id=task_id, title="v1", status="TODO")
+        )
+
+    async with uow_sessionmaker() as session:
+        await mutate_with_event(
+            session,
+            entity_type="task",
+            entity_id=task_id,
+            event_type=EventType.TASK_CREATED,
+            actor_type=ActorType.SYSTEM,
+            actor_id=None,
+            apply=create,
+            load_row=lambda s: _load_task(s, task_id),
+        )
+
+    async def advance(session: AsyncSession) -> None:
+        await session.execute(
+            update(Task).where(Task.id == task_id).values(status="IN_PROGRESS")
+        )
+
+    async with uow_sessionmaker() as session:
+        await mutate_with_event(
+            session,
+            entity_type="task",
+            entity_id=task_id,
+            event_type=EventType.TASK_UPDATED,
+            actor_type=ActorType.SYSTEM,
+            actor_id=None,
+            apply=advance,
+            load_row=lambda s: _load_task(s, task_id),
+        )
+
+    async with uow_sessionmaker() as check:
+        ev = (
+            await check.execute(
+                select(Event)
+                .where(Event.entity_id == task_id)
+                .where(Event.event_type == EventType.TASK_UPDATED)
+            )
+        ).scalar_one()
+        before = cast(dict[str, Any], ev.payload_json["before"])
+        after = cast(dict[str, Any], ev.payload_json["after"])
+
+        # Изменённое поле РАЗЛИЧАЕТСЯ: before хранит прежнее состояние, after — новое.
+        assert before["status"] == "TODO"
+        assert after["status"] == "IN_PROGRESS"
+        assert before["status"] != after["status"]
+        # Снимки самодостаточны и не являются одним и тем же объектом.
+        assert before is not after

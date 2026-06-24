@@ -108,6 +108,16 @@ async def mutate_with_event(
         # serialize_row(before_row) дёрнул бы ленивую дозагрузку вне greenlet →
         # MissingGreenlet. Материализуем значения в plain dict здесь и сейчас.
         before = serialize_row(before_row) if before_row is not None else None
+        if before_row is not None:
+            # CR-02: отвязать identity-map-инстанс before от сессии. На UPDATE
+            # ``load_row`` (session.get) вернул бы ТОТ ЖЕ объект для after; expunge
+            # гарантирует, что after_row будет СВЕЖЕЙ загрузкой, а before_row уже
+            # нельзя задним числом «обновить» через flush/refresh. Снимок before
+            # структурно не может схлопнуться в after через identity-map — даже
+            # если сериализацию before когда-нибудь переставят после apply
+            # (defense-in-depth поверх раннего serialize_row выше). Защита ядра
+            # аудит-инварианта: before != after на изменённых полях.
+            session.expunge(before_row)
 
         result = await apply(session)
         # flush до снимка after: server-default'ы (created_at/updated_at) должны
