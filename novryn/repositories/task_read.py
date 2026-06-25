@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from sqlalchemy import ColumnElement, desc, func, select
+from sqlalchemy import ColumnElement, RowMapping, desc, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from novryn.db.models import Task
@@ -94,3 +94,47 @@ async def search_tasks(
 
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def fetch_subtree_rows(
+    session: AsyncSession, root_id: uuid.UUID, max_depth: int
+) -> list[RowMapping]:
+    """Получить ВСЁ поддерево root_id за ОДИН SQL-запрос (рекурсивный CTE, HIER-02).
+
+    Anchor: корень с ``depth=0``. Рекурсия: дети (``parent_task_id == родитель``) с
+    ``depth+1``, ограничена ``WHERE depth < max_depth`` (guard разбега, D-12). Возврат —
+    ПЛОСКИЙ список mappings (id, parent_task_id, title, status, depth) из ОДНОГО
+    ``execute`` (no N+1). Статус НЕ фильтруется (ARCHIVED включены, D-13); вложенность
+    собирает сервис в памяти — IO остаётся одним запросом.
+
+    Note:
+        ``max_depth`` вызывающий обычно передаёт как ``реальный_лимит + 1`` — чтобы
+        отличить «глубже лимита» от «ровно лимит» (см. hierarchy_service.get_task_tree).
+    """
+    anchor = (
+        select(
+            Task.id,
+            Task.parent_task_id,
+            Task.title,
+            Task.status,
+            literal(0).label("depth"),
+        )
+        .where(Task.id == root_id)
+        .cte("subtree", recursive=True)
+    )
+    child = (
+        select(
+            Task.id,
+            Task.parent_task_id,
+            Task.title,
+            Task.status,
+            (anchor.c.depth + 1).label("depth"),
+        )
+        .join(anchor, Task.parent_task_id == anchor.c.id)
+        .where(anchor.c.depth < max_depth)
+    )
+    subtree = anchor.union_all(child)
+
+    stmt = select(subtree).order_by(subtree.c.depth)
+    result = await session.execute(stmt)
+    return list(result.mappings().all())
