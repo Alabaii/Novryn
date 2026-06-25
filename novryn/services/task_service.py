@@ -24,7 +24,11 @@ from novryn.db.ids import new_id
 from novryn.db.models import Task
 from novryn.domain.errors import NotFoundError
 from novryn.domain.events import EventType
-from novryn.repositories.uow import mutate_with_event
+from novryn.repositories.uow import (
+    MutationSpec,
+    mutate_many_with_event,
+    mutate_with_event,
+)
 
 
 async def create_task(
@@ -234,3 +238,57 @@ async def unblock(
         actor_id=actor_id,
         values={"status": "TODO", "blocked_reason": None},
     )
+
+
+async def create_subtasks(
+    session: AsyncSession,
+    *,
+    parent_task_id: uuid.UUID,
+    subtasks: list[dict[str, Any]],
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+) -> list[uuid.UUID]:
+    """Создать N подзадач под родителем в ОДНОЙ транзакции (TASK-10, D-02/D-03).
+
+    На каждую подзадачу — свой ``MutationSpec`` (один ``task.created`` на ребёнка,
+    D-02), все применяются через ``mutate_many_with_event`` в единственной
+    транзакции. Любой сбой откатывает ВЕСЬ батч (D-03 all-or-nothing) — частичных
+    подзадач и orphan-событий не остаётся. Привязка ``_tid``/``_sub`` через
+    default-arg, чтобы замыкание брало значение ИТЕРАЦИИ (не late-binding).
+
+    Returns:
+        Список id созданных подзадач в порядке ``subtasks``.
+    """
+    specs: list[MutationSpec] = []
+    new_ids: list[uuid.UUID] = []
+    for sub in subtasks:
+        tid = new_id()
+        new_ids.append(tid)
+
+        async def apply(
+            s: AsyncSession,
+            _tid: uuid.UUID = tid,
+            _sub: dict[str, Any] = sub,
+        ) -> uuid.UUID:
+            await s.execute(
+                insert(Task).values(id=_tid, parent_task_id=parent_task_id, **_sub)
+            )
+            return _tid
+
+        async def load(s: AsyncSession, _tid: uuid.UUID = tid) -> Task | None:
+            return await s.get(Task, _tid)
+
+        specs.append(
+            MutationSpec(
+                entity_type="task",
+                entity_id=tid,
+                event_type=EventType.TASK_CREATED,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                apply=apply,
+                load_row=load,
+            )
+        )
+
+    await mutate_many_with_event(session, items=specs)
+    return new_ids
