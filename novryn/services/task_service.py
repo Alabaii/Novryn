@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import insert, update
+from sqlalchemy import func, insert, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from novryn.db.ids import new_id
@@ -122,3 +122,115 @@ async def update_task(
         load_row=lambda s: s.get(Task, task_id),
     )
     return task_id
+
+
+async def _transition(
+    session: AsyncSession,
+    *,
+    task_id: uuid.UUID,
+    event_type: str,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+    values: dict[str, Any],
+) -> uuid.UUID:
+    """Общий каркас lifecycle-перехода: guard существования + UoW с ЯВНЫМ событием.
+
+    Каждый публичный lifecycle-метод — отдельная операция со СВОИМ ``event_type``
+    (D-01/D-05): этот хелпер лишь устраняет дублирование (guard + UoW + UPDATE).
+    Событие НЕ выводится из dirty-трекинга. На несуществующей задаче — ``NotFoundError``
+    (а не фантомное событие с before=after=None). НЕ каскадит на attachments/
+    dependencies — Novryn хранит факты, очистка связей — решение Hermes (D-09).
+    """
+    if await session.get(Task, task_id) is None:
+        raise NotFoundError(task_id)
+    # session.get выше авто-начал read-tx; закрываем перед явным begin() UoW.
+    await session.rollback()
+
+    async def apply(s: AsyncSession) -> uuid.UUID:
+        await s.execute(update(Task).where(Task.id == task_id).values(**values))
+        return task_id
+
+    await mutate_with_event(
+        session,
+        entity_type="task",
+        entity_id=task_id,
+        event_type=event_type,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        apply=apply,
+        load_row=lambda s: s.get(Task, task_id),
+    )
+    return task_id
+
+
+async def complete_task(
+    session: AsyncSession,
+    *,
+    task_id: uuid.UUID,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+) -> uuid.UUID:
+    """status=DONE + completed_at; событие task.completed (TASK-07, D-01)."""
+    return await _transition(
+        session,
+        task_id=task_id,
+        event_type=EventType.TASK_COMPLETED,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        values={"status": "DONE", "completed_at": func.now()},
+    )
+
+
+async def archive_task(
+    session: AsyncSession,
+    *,
+    task_id: uuid.UUID,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+) -> uuid.UUID:
+    """status=ARCHIVED + archived_at; task.archived (TASK-08, D-01). НЕ каскадит (D-09)."""
+    return await _transition(
+        session,
+        task_id=task_id,
+        event_type=EventType.TASK_ARCHIVED,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        values={"status": "ARCHIVED", "archived_at": func.now()},
+    )
+
+
+async def block(
+    session: AsyncSession,
+    *,
+    task_id: uuid.UUID,
+    reason: str,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+) -> uuid.UUID:
+    """status=BLOCKED + blocked_reason=reason; событие task.blocked (Open Q3)."""
+    return await _transition(
+        session,
+        task_id=task_id,
+        event_type=EventType.TASK_BLOCKED,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        values={"status": "BLOCKED", "blocked_reason": reason},
+    )
+
+
+async def unblock(
+    session: AsyncSession,
+    *,
+    task_id: uuid.UUID,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+) -> uuid.UUID:
+    """status=TODO + blocked_reason=None; task.unblocked (Open Q3: дефолт → TODO)."""
+    return await _transition(
+        session,
+        task_id=task_id,
+        event_type=EventType.TASK_UNBLOCKED,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        values={"status": "TODO", "blocked_reason": None},
+    )
