@@ -13,7 +13,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from novryn.db.models import Attachment, TaskDependency
+from novryn.db.models import Attachment, Session, TaskDependency
 
 
 async def is_reachable(
@@ -63,5 +63,20 @@ async def get_resources(session: AsyncSession, task_id: uuid.UUID) -> list[Attac
         select(Attachment)
         .where(Attachment.task_id == task_id)
         .where(Attachment.deleted_at.is_(None))
+    )
+    return list(result.scalars().all())
+
+
+async def get_sessions(session: AsyncSession, task_id: uuid.UUID) -> list[Session]:
+    """Все сессии задачи в порядке started_at, id ASC — read, без события (SESS-04/A7).
+
+    Сессии НЕ soft-delete'ятся (deleted_at у них нет) — это историческая запись попыток;
+    возвращаются все. Сортировка по started_at затем id (UUID v7) по возрастанию — самые
+    старые первыми (A7).
+    """
+    result = await session.execute(
+        select(Session)
+        .where(Session.task_id == task_id)
+        .order_by(Session.started_at, Session.id)
     )
     return list(result.scalars().all())
