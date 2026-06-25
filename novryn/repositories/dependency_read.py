@@ -13,7 +13,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from novryn.db.models import TaskDependency
+from novryn.db.models import Attachment, TaskDependency
 
 
 async def is_reachable(
@@ -53,5 +53,15 @@ async def get_dependencies(
         select(TaskDependency)
         .where(TaskDependency.task_id == task_id)
         .where(TaskDependency.deleted_at.is_(None))
+    )
+    return list(result.scalars().all())
+
+
+async def get_resources(session: AsyncSession, task_id: uuid.UUID) -> list[Attachment]:
+    """Активные вложения задачи (``deleted_at IS NULL``) — read, без события (ATCH-04)."""
+    result = await session.execute(
+        select(Attachment)
+        .where(Attachment.task_id == task_id)
+        .where(Attachment.deleted_at.is_(None))
     )
     return list(result.scalars().all())
