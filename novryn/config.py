@@ -15,6 +15,9 @@ load_dotenv()
 
 _ASYNCPG_PREFIX = "postgresql+asyncpg://"
 
+# Предел глубины дерева задач по умолчанию (D-12: реальные деревья мельче ~10).
+_DEFAULT_TREE_MAX_DEPTH = 10
+
 
 def get_database_url() -> str:
     """Вернуть `DATABASE_URL` из окружения.
@@ -41,3 +44,23 @@ def get_database_url() -> str:
             f"Получено: {url.split('://', 1)[0]}://..."
         )
     return url
+
+
+def get_tree_max_depth() -> int:
+    """Вернуть максимальную глубину дерева задач (D-12/HIER-03).
+
+    Настраивается через ``NOVRYN_TREE_MAX_DEPTH``; по умолчанию ``10`` (D-12:
+    реальные деревья мельче, guard ловит разбег рекурсии). ``get_task_tree``
+    (план 04) передаёт это значение в фильтр глубины рекурсивного CTE и поднимает
+    ``DepthExceededError`` при превышении — а не молча обрезает поддерево.
+
+    Returns:
+        Предел глубины как ``int`` (число уровней).
+
+    Raises:
+        ValueError: если ``NOVRYN_TREE_MAX_DEPTH`` задан, но не парсится в int.
+    """
+    raw = os.environ.get("NOVRYN_TREE_MAX_DEPTH")
+    if raw is None:
+        return _DEFAULT_TREE_MAX_DEPTH
+    return int(raw)

@@ -22,6 +22,7 @@ import uuid
 
 from sqlalchemy import (
     CheckConstraint,
+    Computed,
     Date,
     DateTime,
     ForeignKey,
@@ -31,12 +32,11 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
-    UniqueConstraint,
     Uuid,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
 from novryn.db.base import Base
@@ -63,6 +63,9 @@ class Task(Base):
     __table_args__ = (
         _in_check("status", _TASK_STATUS, "ck_tasks_status"),
         _in_check("energy_required", _TASK_ENERGY, "ck_tasks_energy"),
+        # FTS-индекс по russian-config search_vector (TASK-09). Заменяет simple-config
+        # idx_tasks_fts из 001; создаётся миграцией 002 (DDL — источник истины).
+        Index("idx_tasks_search_vector", "search_vector", postgresql_using="gin"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=new_id)
@@ -86,6 +89,17 @@ class Task(Base):
     )
     completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     archived_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    # FTS (TASK-09/D-14): STORED generated tsvector, конфиг 'russian'. Выражение
+    # БАЙТ-В-БАЙТ совпадает с DDL миграции 002 (Pitfall 1 — иначе seq scan/рассинхрон).
+    # persisted=True → колонка read-only для ORM (значение вычисляет БД).
+    search_vector: Mapped[str | None] = mapped_column(
+        TSVECTOR,
+        Computed(
+            "to_tsvector('russian', coalesce(title,'') || ' ' || coalesce(description,''))",
+            persisted=True,
+        ),
+        nullable=True,
+    )
 
 
 class TaskDependency(Base):
@@ -96,8 +110,15 @@ class TaskDependency(Base):
         CheckConstraint(
             "task_id <> depends_on_task_id", name="ck_task_dep_no_self"
         ),  # DEP-04: задача не зависит от себя; циклы — Фаза 2 (сервис).
-        UniqueConstraint(
-            "task_id", "depends_on_task_id", name="uq_task_dependencies_pair"
+        # D-06/D-07: частичный UNIQUE только по АКТИВНЫМ рёбрам (deleted_at IS NULL).
+        # Заменяет полный UNIQUE uq_task_dependencies_pair из 001 — повторная привязка
+        # ранее soft-deleted пары не нарушает уникальность. Создаётся миграцией 002.
+        Index(
+            "uq_task_dependencies_active",
+            "task_id",
+            "depends_on_task_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 
@@ -111,6 +132,8 @@ class TaskDependency(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # Soft-delete (D-04/D-07): unlink выставляет deleted_at, физического DELETE нет.
+    deleted_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Attachment(Base):
@@ -132,6 +155,8 @@ class Attachment(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # Soft-delete (D-04/D-07): detach выставляет deleted_at, физического DELETE нет.
+    deleted_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Session(Base):
