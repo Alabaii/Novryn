@@ -10,10 +10,12 @@
 - DepthExceededError  — поддерево глубже предела; ЯВНАЯ ошибка, НЕ тихое усечение (D-13/HIER-03).
 - CycleError          — новое ребро зависимости образует цикл (DEP-05).
 - SelfDependencyError — задача зависит от самой себя (DEP-04).
+- FocusNotFoundError  — на запрошенную дату нет ни одного снимка фокуса (D-04/FOCUS-04).
 """
 
 from __future__ import annotations
 
+import datetime
 import uuid
 
 
@@ -62,3 +64,16 @@ class SelfDependencyError(DomainError):
     def __init__(self, task_id: uuid.UUID) -> None:
         self.task_id = task_id
         super().__init__(f"задача {task_id} не может зависеть от самой себя")
+
+
+class FocusNotFoundError(DomainError):
+    """На запрошенную дату нет ни одного снимка ежедневного фокуса (D-04/FOCUS-04).
+
+    Поднимается чтением фокуса (get_today/focus_now), когда Hermes ещё не
+    сгенерировал фокус на дату: потребитель должен знать, что фокус отсутствует,
+    а не получить пустой список как валидный результат.
+    """
+
+    def __init__(self, date: datetime.date) -> None:
+        self.date = date
+        super().__init__(f"фокус на дату {date} не найден")
