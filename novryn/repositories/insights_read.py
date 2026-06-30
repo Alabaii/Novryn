@@ -163,7 +163,10 @@ async def user_insights(session: AsyncSession) -> dict[str, object]:
     pattern_rows = (
         await session.execute(
             select(BehaviorPattern.pattern_type, BehaviorPattern.confidence)
-            .order_by(desc(BehaviorPattern.confidence))
+            # Вторичный ключ created_at DESC (WR-04): без него при равном
+            # confidence срез top-5 недетерминирован между вызовами. Согласовано
+            # с tie-break соседних выборок (pattern_read/memory_read).
+            .order_by(desc(BehaviorPattern.confidence), desc(BehaviorPattern.created_at))
             .limit(_TOP_PATTERNS_LIMIT)
         )
     ).all()
