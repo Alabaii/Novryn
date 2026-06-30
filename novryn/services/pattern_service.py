@@ -8,6 +8,15 @@ create (``pattern.stored``), строка есть → in-place UPDATE (``patter
 ``memory_store``/``update_task``), а НЕ из исхода ON CONFLICT/dirty-трекинга (D-07):
 UNIQUE — лишь страховка от гонки, не источник бизнес-смысла события.
 
+TOCTOU (WR-02, ПРИНЯТЫЙ ОГРАНИЧЕННЫЙ РИСК для single-user V1): между
+пред-проверкой и INSERT нет блокировки строки/типа. Два КОНКУРЕНТНЫХ
+``pattern_store`` с одним ``pattern_type``, оба не нашедшие строку, оба пойдут
+по ветке INSERT — второй упадёт на ``uq_behavior_pattern_type`` (IntegrityError),
+а не выполнит update. В single-user V1 параллельных писателей нет, риск принят
+сознательно. Долгосрочно (V2): ``INSERT ... ON CONFLICT (pattern_type) DO
+UPDATE`` с выбором ``event_type`` по ``xmax``, либо advisory-lock на
+``pattern_type`` в той же транзакции, что и запись.
+
 confidence-валидация — на уровне БД (CHECK ``ck_behavior_confidence``, D-08):
 значение вне 0.0–1.0 отвергается на write через ``IntegrityError``. Сервис
 дублирующей Python-проверки НЕ вводит и CHECK не ослабляет.
@@ -71,6 +80,17 @@ async def pattern_store(
     # Пред-проверка (session.execute выше) авто-начала read-транзакцию; закрываем
     # её, чтобы UoW открыл свою явную session.begin() (Pitfall 2). Read-only —
     # откатывать нечего; UoW перезагрузит before свежим (load_row).
+    #
+    # WR-03: rollback() безусловно сотрёт ЛЮБЫЕ незакоммиченные изменения сессии.
+    # Контракт «свежая сессия» (docstring) держится на дисциплине вызывающего;
+    # проверяем его ЯВНО, чтобы нарушение падало громко, а не приводило к тихой
+    # потере данных (если будущая composite-операция передаст «грязную» сессию).
+    if session.new or session.dirty or session.deleted:
+        raise RuntimeError(
+            "pattern_store требует свежую сессию без незакоммиченных изменений "
+            "(session.new/dirty/deleted должны быть пусты до пред-проверки); "
+            "rollback() иначе тихо сотрёт их (WR-03)."
+        )
     await session.rollback()
 
     if existing_id is None:

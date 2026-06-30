@@ -8,6 +8,16 @@
 ON CONFLICT/dirty-трекинга (D-07): UNIQUE — лишь страховка от гонки, не источник
 бизнес-смысла события.
 
+TOCTOU (WR-02, ПРИНЯТЫЙ ОГРАНИЧЕННЫЙ РИСК для single-user V1): между
+пред-проверкой и INSERT нет блокировки строки/типа. Два КОНКУРЕНТНЫХ
+``memory_store`` с одним ``memory_type``, оба не нашедшие строку, оба пойдут
+по ветке INSERT — второй упадёт на ``uq_user_memory_type`` (IntegrityError),
+а не выполнит update. В single-user V1 параллельных писателей нет, поэтому
+риск принят сознательно. Долгосрочно (V2 / при появлении конкурентных
+писателей): ``INSERT ... ON CONFLICT (memory_type) DO UPDATE`` с выбором
+``event_type`` по ``xmax``, либо advisory-lock на ``memory_type`` в той же
+транзакции, что и запись.
+
 confidence-валидация — на уровне БД (CHECK ``ck_user_memory_confidence``, D-08):
 значение вне 0.0–1.0 отвергается на write через ``IntegrityError``. Сервис
 дублирующей Python-проверки НЕ вводит и CHECK не ослабляет.
@@ -70,6 +80,17 @@ async def memory_store(
     # Пред-проверка (session.execute выше) авто-начала read-транзакцию; закрываем
     # её, чтобы UoW открыл свою явную session.begin() (Pitfall 2). Read-only —
     # откатывать нечего; UoW перезагрузит before свежим (load_row).
+    #
+    # WR-03: rollback() безусловно сотрёт ЛЮБЫЕ незакоммиченные изменения сессии.
+    # Контракт «свежая сессия» (docstring) держится на дисциплине вызывающего;
+    # проверяем его ЯВНО, чтобы нарушение падало громко, а не приводило к тихой
+    # потере данных (если будущая composite-операция передаст «грязную» сессию).
+    if session.new or session.dirty or session.deleted:
+        raise RuntimeError(
+            "memory_store требует свежую сессию без незакоммиченных изменений "
+            "(session.new/dirty/deleted должны быть пусты до пред-проверки); "
+            "rollback() иначе тихо сотрёт их (WR-03)."
+        )
     await session.rollback()
 
     if existing_id is None:
