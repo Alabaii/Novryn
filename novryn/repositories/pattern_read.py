@@ -41,7 +41,16 @@ async def get_behavior_patterns(
     if pattern_type is not None:
         conds.append(BehaviorPattern.pattern_type == pattern_type)
     if min_confidence is not None:
-        conds.append(BehaviorPattern.confidence >= min_confidence)
+        # WR-05: нормализуем к Decimal до бинда. confidence — NUMERIC(3,2); float
+        # (например 0.7, непредставимый в двоичном float) дал бы граничные
+        # расхождения на крае (== 0.70 попадает/выпадает непредсказуемо).
+        # Decimal(str(...)) сохраняет десятичную точность фильтра на чтении.
+        mc = (
+            min_confidence
+            if isinstance(min_confidence, decimal.Decimal)
+            else decimal.Decimal(str(min_confidence))
+        )
+        conds.append(BehaviorPattern.confidence >= mc)
 
     stmt = (
         select(BehaviorPattern)

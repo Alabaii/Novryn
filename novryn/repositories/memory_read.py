@@ -60,7 +60,16 @@ async def memory_search(
     if memory_type is not None:
         conds.append(UserMemory.memory_type == memory_type)
     if min_confidence is not None:
-        conds.append(UserMemory.confidence >= min_confidence)
+        # WR-05: нормализуем к Decimal до бинда. confidence — NUMERIC(3,2); float
+        # (например 0.7, непредставимый в двоичном float) дал бы граничные
+        # расхождения на крае (== 0.70 попадает/выпадает непредсказуемо).
+        # Decimal(str(...)) сохраняет десятичную точность фильтра на чтении.
+        mc = (
+            min_confidence
+            if isinstance(min_confidence, decimal.Decimal)
+            else decimal.Decimal(str(min_confidence))
+        )
+        conds.append(UserMemory.confidence >= mc)
     if source is not None:
         conds.append(UserMemory.source == source)
 
