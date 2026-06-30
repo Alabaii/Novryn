@@ -54,8 +54,14 @@ class EventType:
     FOCUS_GENERATED: Final = "focus.generated"
 
     # user_memory (PRD §10) / behavior_patterns (PRD §11).
+    # Upsert по memory_type/pattern_type (D-05): первая запись → `.stored`, повторная
+    # запись того же типа обновляет строку in-place и пишет `.updated`. История
+    # эволюции confidence/content полностью восстанавливается из Event Store
+    # (последовательность .stored → .updated → ...), хотя строка одна.
     MEMORY_STORED: Final = "memory.stored"
+    MEMORY_UPDATED: Final = "memory.updated"
     PATTERN_STORED: Final = "pattern.stored"
+    PATTERN_UPDATED: Final = "pattern.updated"
 
     # Компенсирующее событие (D-07): отменяет ранее зафиксированный факт.
     # Доменный сервис формирует конкретное имя как f"{base}.invalidated"
