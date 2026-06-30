@@ -193,9 +193,16 @@ class DailyFocus(Base):
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
     reason: Mapped[str | None] = mapped_column(Text)
     generated_by: Mapped[str | None] = mapped_column(Text)
-    # Версионирование снимков фокуса (D-01/D-02): regenerate пишет новую версию,
-    # чтение берёт максимальный generated_at на дату (tie-break id DESC, Pitfall 5).
-    # Зеркало миграции 003: TIMESTAMPTZ NOT NULL DEFAULT now().
+    # Версионирование снимков фокуса (D-01/D-02): regenerate пишет новую версию.
+    # Версия снимка = непрозрачный focus_set_id (один UUID v7 на весь снимок),
+    # НЕ generated_at: два снимка в пределах одного тика часов (или при NTP-сдвиге
+    # назад) могут разделить равный generated_at, и выбор версии по MAX(generated_at)
+    # смешал бы строки двух версий (CR-01). focus_set_id уникален на снимок и
+    # устраняет этот класс ошибки целиком. Зеркало миграции 003: UUID NOT NULL.
+    focus_set_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    # Метка времени версии — упорядочивает снимки на дату для выбора последнего
+    # focus_set_id (ORDER BY generated_at DESC, focus_set_id DESC). Зеркало
+    # миграции 003: TIMESTAMPTZ NOT NULL DEFAULT now().
     generated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

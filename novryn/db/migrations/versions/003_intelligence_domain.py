@@ -10,10 +10,12 @@ Create Date: 2026-06-30
 (FOCUS/MEM/PAT/INS) для доменных сервисов Фазы 3 (Wave 2).
 
 Состав ``upgrade()`` (порядок важен):
- 1. daily_focus.generated_at (TIMESTAMPTZ NOT NULL DEFAULT now()) — версионирование
-    снимков фокуса (D-01/D-02: regenerate = новая версия, чтение — последняя).
- 2. idx_daily_focus_date_gen — (date, generated_at DESC, id DESC): tie-break по id
-    DESC при равном generated_at (Pitfall 5) для детерминированного «последнего».
+ 1. daily_focus.generated_at (TIMESTAMPTZ NOT NULL DEFAULT now()) + focus_set_id
+    (UUID NOT NULL) — версионирование снимков (D-01/D-02). Версия = focus_set_id
+    (один UUID на снимок), НЕ generated_at: равный generated_at двух снимков
+    (один тик / NTP-сдвиг назад) смешал бы строки версий (CR-01).
+ 2. idx_daily_focus_date_gen — (date, generated_at DESC, focus_set_id DESC, rank,
+    id DESC): детерминированный выбор последнего focus_set_id на дату + порядок строк.
  3. user_memory.memory_type → NOT NULL + uq_user_memory_type (UNIQUE) — ключ
     upsert (D-05: store того же типа обновляет строку in-place).
  4. behavior_patterns.pattern_type → NOT NULL + uq_behavior_pattern_type (UNIQUE) —
@@ -45,15 +47,23 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Upgrade: focus versioning + memory/pattern upsert keys + russian memory FTS."""
-    # 1) daily_focus.generated_at — версионирование снимков фокуса (D-01/D-02).
+    # 1) daily_focus версионирование снимков (D-01/D-02). focus_set_id —
+    #    непрозрачный ключ версии (один UUID на снимок); generated_at лишь
+    #    упорядочивает снимки на дату. Выбор версии по focus_set_id, НЕ по
+    #    равенству generated_at (CR-01: два снимка в одном тике / NTP-сдвиг
+    #    назад дают равный generated_at и смешали бы строки двух версий).
+    #    Таблица пуста на момент миграции → NOT NULL без backfill безопасен.
     op.execute(
         "ALTER TABLE daily_focus ADD COLUMN generated_at TIMESTAMPTZ "
         "NOT NULL DEFAULT now();"
     )
-    # 2) Индекс под «последний снимок на дату»: tie-break id DESC (Pitfall 5).
+    op.execute("ALTER TABLE daily_focus ADD COLUMN focus_set_id UUID NOT NULL;")
+    # 2) Индекс под «последний снимок на дату»: упорядочивает версии по
+    #    generated_at DESC, focus_set_id DESC (детерминированный «последний»
+    #    focus_set_id даже при равном generated_at), затем строки по rank/id.
     op.execute(
         "CREATE INDEX idx_daily_focus_date_gen "
-        "ON daily_focus (date, generated_at DESC, id DESC);"
+        "ON daily_focus (date, generated_at DESC, focus_set_id DESC, rank, id DESC);"
     )
 
     # 3) user_memory.memory_type → NOT NULL + UNIQUE (ключ upsert, D-05).
@@ -110,4 +120,5 @@ def downgrade() -> None:
     op.execute("ALTER TABLE user_memory ALTER COLUMN memory_type DROP NOT NULL;")
 
     op.execute("DROP INDEX IF EXISTS idx_daily_focus_date_gen;")
+    op.execute("ALTER TABLE daily_focus DROP COLUMN IF EXISTS focus_set_id;")
     op.execute("ALTER TABLE daily_focus DROP COLUMN IF EXISTS generated_at;")

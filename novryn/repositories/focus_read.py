@@ -5,11 +5,13 @@
 Core (``.where(DailyFocus.date == date)``), конкатенации в SQL нет (T-03-06).
 
 «Последняя версия» (D-02): на одну дату может быть несколько снимков (повторный
-``generate_daily_focus`` пишет новую версию с большим ``generated_at``).
-Выбирается версия с ``MAX(generated_at)`` на дату; при равном ``generated_at``
-tie-break ``id DESC`` (Pitfall 5, поддержан индексом
-``(date, generated_at DESC, id DESC)`` из миграции 003). Строки версии
-упорядочены по ``rank ASC`` (FOCUS-02).
+``generate_daily_focus`` пишет новую версию с новым ``focus_set_id``). Версия
+идентифицируется ``focus_set_id`` (один UUID на снимок), НЕ ``generated_at``:
+выбирается ``focus_set_id`` снимка с ``MAX(generated_at)`` (tie-break
+``focus_set_id DESC`` при равном ``generated_at`` — CR-01), затем берутся ТОЛЬКО
+строки этого ``focus_set_id`` (поддержано индексом
+``(date, generated_at DESC, focus_set_id DESC, rank, id DESC)`` миграции 003).
+Строки версии упорядочены по ``rank ASC`` (FOCUS-02).
 
 Решение D-04 (ошибка на пустоту, НЕ пустой список) поднимается здесь, в
 read-обёртке: для даты без снимка обе функции бросают ``FocusNotFoundError``.
@@ -19,7 +21,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
@@ -30,17 +32,23 @@ from novryn.domain.errors import FocusNotFoundError
 def _latest_version_stmt(date: datetime.date) -> Select[tuple[DailyFocus]]:
     """SELECT строк последней версии снимка на ``date``, упорядоченных по rank ASC.
 
-    Подзапрос ``MAX(generated_at)`` фиксирует последнюю версию; основной запрос
-    берёт только её строки. ``date`` — bind-параметр Core (T-03-06).
+    Версия = ``focus_set_id`` (один UUID на снимок), НЕ ``generated_at``. Подзапрос
+    выбирает ``focus_set_id`` снимка с максимальным ``generated_at`` (tie-break
+    ``focus_set_id DESC`` при равном ``generated_at`` — детерминированно), затем
+    основной запрос берёт ТОЛЬКО строки этого ``focus_set_id``. Это исключает
+    смешивание двух версий при равном ``generated_at`` (CR-01: один тик часов /
+    NTP-сдвиг назад). ``date`` — bind-параметр Core (T-03-06).
     """
-    latest = (
-        select(func.max(DailyFocus.generated_at))
+    latest_set = (
+        select(DailyFocus.focus_set_id)
         .where(DailyFocus.date == date)
+        .order_by(DailyFocus.generated_at.desc(), DailyFocus.focus_set_id.desc())
+        .limit(1)
         .scalar_subquery()
     )
     return (
         select(DailyFocus)
-        .where(DailyFocus.date == date, DailyFocus.generated_at == latest)
+        .where(DailyFocus.date == date, DailyFocus.focus_set_id == latest_set)
         .order_by(DailyFocus.rank, DailyFocus.id.desc())
     )
 
