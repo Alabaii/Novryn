@@ -16,18 +16,33 @@ relationships (иначе ``MissingGreenlet`` в async-контексте). Не
 
 from __future__ import annotations
 
+import decimal
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from novryn.db.models import (
     Attachment,
+    BehaviorPattern,
     DailyFocus,
     Session,
     Task,
     TaskDependency,
+    UserMemory,
 )
+
+# Размер выдачи топа паттернов в user_insights (D-12) — небольшой, без DoS-разбега.
+_TOP_PATTERNS_LIMIT = 5
+
+
+def _to_float(value: object) -> float | None:
+    """Нормализовать Decimal/None из AVG к сериализуемому float (или None)."""
+    if value is None:
+        return None
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    return float(value)  # type: ignore[arg-type]
 
 
 async def task_insights(session: AsyncSession, task_id: uuid.UUID) -> dict[str, object]:
@@ -108,4 +123,93 @@ async def task_insights(session: AsyncSession, task_id: uuid.UUID) -> dict[str, 
         "subtask_count": int(subtask_count or 0),
         "active_dependency_count": int(dependency_count or 0),
         "active_attachment_count": int(attachment_count or 0),
+    }
+
+
+async def user_insights(session: AsyncSession) -> dict[str, object]:
+    """Полный кросс-доменный срез пользователя на лету (INS-02, D-12).
+
+    Несколькими узкими агрегатными запросами (RESEARCH A6, НЕ один мега-JOIN): задачи по
+    статусам (GROUP BY), суммарное/среднее отслеженное время, доля завершённых (DONE/всего),
+    топ behavior_patterns по confidence, сводка user_memory (count + GROUP BY memory_type),
+    активность фокуса (число дат + последняя дата). Decimal/None нормализованы к
+    сериализуемым числам.
+
+    Read-only: событий не пишет, транзакцию не открывает, lazy relationships не использует.
+
+    Returns:
+        dict с полным срезом (поля могут быть ``0``/``None`` при пустой БД).
+    """
+    # (1) Задачи по статусам: GROUP BY status.
+    status_rows = (
+        await session.execute(
+            select(Task.status, func.count()).group_by(Task.status)
+        )
+    ).all()
+    tasks_by_status = {status: int(cnt) for status, cnt in status_rows}
+    total_tasks = sum(tasks_by_status.values())
+    done_tasks = tasks_by_status.get("DONE", 0)
+    # (4) Доля завершённых задач: DONE / всего (из агрегата статусов).
+    completion_ratio = (done_tasks / total_tasks) if total_tasks else None
+
+    # (2)(3) Суммарное и среднее отслеженное время по всем сессиям.
+    time_q = select(
+        func.coalesce(func.sum(Session.actual_minutes), 0).label("tracked_total"),
+        func.avg(Session.actual_minutes).label("avg_session"),
+    )
+    trow = (await session.execute(time_q)).one()
+
+    # (5) Топ behavior_patterns по confidence (агрегаты — только тип/уверенность, не evidence).
+    pattern_rows = (
+        await session.execute(
+            select(BehaviorPattern.pattern_type, BehaviorPattern.confidence)
+            .order_by(desc(BehaviorPattern.confidence))
+            .limit(_TOP_PATTERNS_LIMIT)
+        )
+    ).all()
+    top_patterns = [
+        {"pattern_type": pt, "confidence": _to_float(conf)}
+        for pt, conf in pattern_rows
+    ]
+
+    # (6) Сводка user_memory: общий count + распределение по memory_type.
+    memory_total = await session.scalar(select(func.count()).select_from(UserMemory))
+    memory_type_rows = (
+        await session.execute(
+            select(UserMemory.memory_type, func.count()).group_by(UserMemory.memory_type)
+        )
+    ).all()
+    memory_by_type = {mt: int(cnt) for mt, cnt in memory_type_rows}
+
+    # (7) Активность фокуса: число уникальных дат + последняя дата.
+    focus_q = select(
+        func.count(func.distinct(DailyFocus.date)).label("focus_days"),
+        func.max(DailyFocus.date).label("last_focus_date"),
+    )
+    focus_row = (await session.execute(focus_q)).one()
+
+    return {
+        "tasks": {
+            "total": total_tasks,
+            "by_status": tasks_by_status,
+            "completed": done_tasks,
+            "completion_ratio": completion_ratio,
+        },
+        "time": {
+            "tracked_minutes_total": int(trow.tracked_total),
+            "avg_session_minutes": _to_float(trow.avg_session),
+        },
+        "top_patterns": top_patterns,
+        "memory": {
+            "total": int(memory_total or 0),
+            "by_type": memory_by_type,
+        },
+        "focus": {
+            "active_days": int(focus_row.focus_days),
+            "last_date": (
+                focus_row.last_focus_date.isoformat()
+                if focus_row.last_focus_date is not None
+                else None
+            ),
+        },
     }
