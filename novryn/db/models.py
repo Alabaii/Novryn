@@ -32,6 +32,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
     func,
     text,
@@ -192,6 +193,12 @@ class DailyFocus(Base):
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
     reason: Mapped[str | None] = mapped_column(Text)
     generated_by: Mapped[str | None] = mapped_column(Text)
+    # Версионирование снимков фокуса (D-01/D-02): regenerate пишет новую версию,
+    # чтение берёт максимальный generated_at на дату (tie-break id DESC, Pitfall 5).
+    # Зеркало миграции 003: TIMESTAMPTZ NOT NULL DEFAULT now().
+    generated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class UserMemory(Base):
@@ -202,10 +209,17 @@ class UserMemory(Base):
         CheckConstraint(
             "confidence BETWEEN 0.0 AND 1.0", name="ck_user_memory_confidence"
         ),  # MEM-02
+        # Ключ upsert (D-05): store того же memory_type обновляет строку in-place.
+        # Зеркало миграции 003 (uq_user_memory_type).
+        UniqueConstraint("memory_type", name="uq_user_memory_type"),
+        # FTS (MEM-03): GIN по russian-config search_vector. Зеркало миграции 003.
+        Index(
+            "idx_user_memory_search_vector", "search_vector", postgresql_using="gin"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=new_id)
-    memory_type: Mapped[str | None] = mapped_column(Text)
+    memory_type: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str | None] = mapped_column(Text)
     confidence: Mapped[decimal.Decimal | None] = mapped_column(Numeric(3, 2))
     source: Mapped[str | None] = mapped_column(Text)
@@ -214,6 +228,17 @@ class UserMemory(Base):
     )
     updated_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    # FTS (MEM-03): STORED generated tsvector, конфиг 'russian'. Выражение
+    # БАЙТ-В-БАЙТ совпадает с DDL миграции 003 (Pitfall 1 — иначе seq scan/рассинхрон).
+    # persisted=True → колонка read-only для ORM (значение вычисляет БД).
+    search_vector: Mapped[str | None] = mapped_column(
+        TSVECTOR,
+        Computed(
+            "to_tsvector('russian', coalesce(content,''))",
+            persisted=True,
+        ),
+        nullable=True,
     )
 
 
@@ -225,10 +250,13 @@ class BehaviorPattern(Base):
         CheckConstraint(
             "confidence BETWEEN 0.0 AND 1.0", name="ck_behavior_confidence"
         ),
+        # Ключ upsert: store того же pattern_type обновляет строку in-place.
+        # Зеркало миграции 003 (uq_behavior_pattern_type).
+        UniqueConstraint("pattern_type", name="uq_behavior_pattern_type"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=new_id)
-    pattern_type: Mapped[str | None] = mapped_column(Text)
+    pattern_type: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[decimal.Decimal | None] = mapped_column(Numeric(3, 2))
     evidence_json: Mapped[dict[str, object] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime.datetime] = mapped_column(
