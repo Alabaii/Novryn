@@ -61,6 +61,7 @@ async def _seed(s: AsyncSession) -> uuid.UUID:
             task_id=tid,
             rank=1,
             reason="insights",
+            focus_set_id=new_id(),  # CR-01: версия снимка, NOT NULL
         )
     )
     await s.execute(

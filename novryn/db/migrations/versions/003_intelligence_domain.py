@@ -57,7 +57,18 @@ def upgrade() -> None:
         "ALTER TABLE daily_focus ADD COLUMN generated_at TIMESTAMPTZ "
         "NOT NULL DEFAULT now();"
     )
-    op.execute("ALTER TABLE daily_focus ADD COLUMN focus_set_id UUID NOT NULL;")
+    # focus_set_id: добавляем nullable → backfill → SET NOT NULL (безопасно даже
+    # если таблица не пуста — downgrade/upgrade-цикл в тестах оставляет строки
+    # без колонки). Backfill даёт каждой осиротевшей строке собственный UUID
+    # (она становится отдельной версией — приемлемо для остаточных строк).
+    # Приложение ВСЕГДА проставляет focus_set_id явно (один на снимок), поэтому
+    # постоянный column-default не нужен и не закладывается.
+    op.execute("ALTER TABLE daily_focus ADD COLUMN focus_set_id UUID;")
+    op.execute(
+        "UPDATE daily_focus SET focus_set_id = gen_random_uuid() "
+        "WHERE focus_set_id IS NULL;"
+    )
+    op.execute("ALTER TABLE daily_focus ALTER COLUMN focus_set_id SET NOT NULL;")
     # 2) Индекс под «последний снимок на дату»: упорядочивает версии по
     #    generated_at DESC, focus_set_id DESC (детерминированный «последний»
     #    focus_set_id даже при равном generated_at), затем строки по rank/id.
