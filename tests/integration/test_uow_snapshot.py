@@ -17,7 +17,7 @@ from typing import Any, cast
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import insert, select, update
+from sqlalchemy import RowMapping, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from novryn.db.ids import new_id
@@ -187,3 +187,52 @@ async def test_before_snapshot_decoupled_from_after_identity(
         assert before["status"] != after["status"]
         # Снимки самодостаточны и не являются одним и тем же объектом.
         assert before is not after
+
+
+@pytest.mark.asyncio
+async def test_update_with_mapping_load_row(
+    uow_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """load_row может вернуть Mapping и на UPDATE: снимок — ровно его ключи.
+
+    Так сервис исключает из журнала поля, которым там не место (хэш токена доступа):
+    журнал append-only, вычистить их оттуда потом нельзя.
+    """
+    task_id = new_id()
+    async with uow_sessionmaker() as session:
+        async with session.begin():
+            await session.execute(
+                insert(Task).values(id=task_id, title="до", status="TODO")
+            )
+
+    async def load(session: AsyncSession) -> RowMapping | None:
+        result = await session.execute(
+            select(Task.id, Task.title).where(Task.id == task_id)
+        )
+        return result.mappings().one_or_none()
+
+    async def rename(session: AsyncSession) -> None:
+        await session.execute(
+            update(Task).where(Task.id == task_id).values(title="после")
+        )
+
+    async with uow_sessionmaker() as session:
+        await mutate_with_event(
+            session,
+            entity_type="task",
+            entity_id=task_id,
+            event_type=EventType.TASK_UPDATED,
+            actor_type=ActorType.USER,
+            actor_id=None,
+            apply=rename,
+            load_row=load,
+        )
+
+    async with uow_sessionmaker() as check:
+        event = (
+            await check.execute(select(Event).where(Event.entity_id == task_id))
+        ).scalar_one()
+        assert event.payload_json == {
+            "before": {"id": str(task_id), "title": "до"},
+            "after": {"id": str(task_id), "title": "после"},
+        }
