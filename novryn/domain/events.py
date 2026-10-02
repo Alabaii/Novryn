@@ -63,6 +63,11 @@ class EventType:
     PATTERN_STORED: Final = "pattern.stored"
     PATTERN_UPDATED: Final = "pattern.updated"
 
+    # api_tokens (Фаза 4, PERM-04) — выдача и отзыв доступа к MCP-эндпоинту.
+    # Снимки события НЕ содержат ни токена, ни его хэша (журнал append-only).
+    TOKEN_ISSUED: Final = "token.issued"
+    TOKEN_REVOKED: Final = "token.revoked"
+
     # Компенсирующее событие (D-07): отменяет ранее зафиксированный факт.
     # Доменный сервис формирует конкретное имя как f"{base}.invalidated"
     # (например "task.completed.invalidated"); INVALIDATED — суффикс-якорь.

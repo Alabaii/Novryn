@@ -49,6 +49,9 @@ _TASK_ENERGY = ("LOW", "MEDIUM", "HIGH")
 _ATTACHMENT_TYPE = ("URL", "DOCUMENT", "PDF", "GITHUB", "GOOGLE_DOC", "OTHER")
 _SESSION_RESULT = ("COMPLETED", "PARTIAL", "ABANDONED", "INTERRUPTED")
 _EVENT_ACTOR_TYPE = ("USER", "HERMES", "SYSTEM")
+# Держатель токена доступа: только реальные акторы. SYSTEM — это действия оператора
+# с прямым доступом к БД (CLI, миграции), токен ему не нужен.
+_TOKEN_HOLDER_TYPE = ("USER", "HERMES")
 
 
 def _in_check(column: str, values: tuple[str, ...], name: str) -> CheckConstraint:
@@ -272,6 +275,31 @@ class BehaviorPattern(Base):
     updated_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ApiToken(Base):
+    """Токен доступа к MCP-эндпоинту (Фаза 4, PERM-04).
+
+    Хранится только SHA-256 хэш: сам токен показывается один раз при выдаче.
+    ``id`` токена — это ``actor_id`` в событиях, которые сделал его держатель:
+    по журналу видно, какой именно токен (устройство/агент) совершил действие.
+    Отзыв — ``revoked_at``; строки не удаляются. Зеркало миграции 004.
+    """
+
+    __tablename__ = "api_tokens"
+    __table_args__ = (
+        _in_check("holder_type", _TOKEN_HOLDER_TYPE, "ck_api_tokens_holder_type"),
+        UniqueConstraint("token_hash", name="uq_api_tokens_token_hash"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    holder_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Event(Base):
