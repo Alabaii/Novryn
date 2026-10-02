@@ -102,7 +102,9 @@ async def test_journal_has_no_token_secrets(
     assert issued.token not in dumped
     assert hash_token(issued.token) not in dumped
     assert "token_hash" not in dumped
-    assert events[0].payload_json["after"]["name"] == "secret-check"
+    issued_after = events[0].payload_json["after"]
+    assert isinstance(issued_after, dict)
+    assert issued_after["name"] == "secret-check"
 
 
 @pytest.mark.asyncio
