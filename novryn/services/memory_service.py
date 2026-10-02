@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from novryn.db.ids import new_id
 from novryn.db.models import UserMemory
-from novryn.domain.events import ActorType, EventType
+from novryn.domain.events import EventType
 from novryn.repositories.uow import mutate_with_event
 
 
@@ -47,8 +47,8 @@ async def memory_store(
     content: str,
     confidence: float,
     source: str,
-    actor_type: str = ActorType.HERMES,
-    actor_id: uuid.UUID | None = None,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
 ) -> uuid.UUID:
     """Upsert памяти по ``memory_type`` + ЯВНОЕ событие stored/updated (MEM-01/04).
 
@@ -63,6 +63,10 @@ async def memory_store(
 
     confidence вне 0.0–1.0 отвергается БД-CHECK на write как ``IntegrityError``
     (D-08/Pitfall 4) — Python-проверки диапазона здесь НЕТ.
+
+    Автор (``actor_type``/``actor_id``) обязателен и пишется в событие как есть:
+    умолчания нет, чтобы запись не приписывалась Hermes молча. MCP-слой Фазы 4
+    передаёт автора из токена (PERM-04).
 
     Returns:
         id строки памяти: новый id при create, существующий id при update.
