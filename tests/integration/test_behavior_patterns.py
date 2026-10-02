@@ -76,6 +76,7 @@ async def test_store_and_update(
     async with uow_sessionmaker() as check:
         row = await check.get(BehaviorPattern, first_id)
         assert row is not None
+        assert row.confidence is not None
         assert float(row.confidence) == pytest.approx(0.85)
         assert await _count_events(check, first_id, "pattern.updated") == 1
 
