@@ -109,13 +109,15 @@ async def _apply_one(session: AsyncSession, spec: MutationSpec) -> Any:
     # serialize_row(before_row) дёрнул бы ленивую дозагрузку вне greenlet →
     # MissingGreenlet. Материализуем значения в plain dict здесь и сейчас.
     before = serialize_row(before_row) if before_row is not None else None
-    if before_row is not None:
+    if before_row is not None and not isinstance(before_row, Mapping):
         # CR-02: отвязать identity-map-инстанс before от сессии. На UPDATE
         # load_row (session.get) вернул бы ТОТ ЖЕ объект для after; expunge
         # гарантирует, что after_row будет СВЕЖЕЙ загрузкой, а before_row уже
         # нельзя задним числом «обновить» через flush/refresh. Снимок before
         # структурно не может схлопнуться в after через identity-map. Защита
         # ядра аудит-инварианта: before != after на изменённых полях.
+        # Mapping (результат .mappings()) в identity-map не живёт — отвязывать
+        # нечего, а expunge на нём упал бы (UnmappedInstanceError).
         session.expunge(before_row)
 
     result = await spec.apply(session)
