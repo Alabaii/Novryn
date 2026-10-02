@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from novryn.db.models import Event, UserMemory
+from novryn.domain.events import ActorType
 
 # Wave-2 целевой символ (ещё не существует → RED при коллекции).
 from novryn.services.memory_service import memory_store
@@ -60,7 +61,8 @@ async def test_store_creates(
     mtype = _unique_type("pref")
     async with uow_sessionmaker() as s:
         mem_id = await memory_store(
-            s, memory_type=mtype, content="любит утро", confidence=0.75, source="hermes"
+            s, memory_type=mtype, content="любит утро", confidence=0.75, source="hermes",
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as check:
         row = await check.get(UserMemory, mem_id)
@@ -77,11 +79,13 @@ async def test_store_same_type_updates_inplace_event_updated(
     mtype = _unique_type("inplace")
     async with uow_sessionmaker() as s:
         first_id = await memory_store(
-            s, memory_type=mtype, content="старое", confidence=0.5, source="hermes"
+            s, memory_type=mtype, content="старое", confidence=0.5, source="hermes",
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as s:
         second_id = await memory_store(
-            s, memory_type=mtype, content="новое", confidence=0.9, source="hermes"
+            s, memory_type=mtype, content="новое", confidence=0.9, source="hermes",
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     # Та же строка (in-place, не новая).
     assert second_id == first_id
@@ -101,7 +105,8 @@ async def test_confidence_out_of_range_rejected(
     with pytest.raises(IntegrityError):
         async with uow_sessionmaker() as s:
             await memory_store(
-                s, memory_type=mtype, content="x", confidence=1.5, source="hermes"
+                s, memory_type=mtype, content="x", confidence=1.5, source="hermes",
+                actor_type=ActorType.HERMES, actor_id=None,
             )
 
 
@@ -113,7 +118,8 @@ async def test_updated_at_changes_on_update(
     mtype = _unique_type("ts")
     async with uow_sessionmaker() as s:
         mem_id = await memory_store(
-            s, memory_type=mtype, content="v1", confidence=0.4, source="hermes"
+            s, memory_type=mtype, content="v1", confidence=0.4, source="hermes",
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as check:
         before = await check.get(UserMemory, mem_id)
@@ -123,7 +129,8 @@ async def test_updated_at_changes_on_update(
     await asyncio.sleep(0.01)
     async with uow_sessionmaker() as s:
         await memory_store(
-            s, memory_type=mtype, content="v2", confidence=0.6, source="hermes"
+            s, memory_type=mtype, content="v2", confidence=0.6, source="hermes",
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as check:
         after = await check.get(UserMemory, mem_id)

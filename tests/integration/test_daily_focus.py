@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from novryn.db.ids import new_id
 from novryn.db.models import Event, Task
 from novryn.domain.errors import FocusNotFoundError
+from novryn.domain.events import ActorType
 
 # Wave-2 целевые символы (ещё не существуют → RED при коллекции).
 from novryn.repositories.focus_read import focus_now, get_today_tasks
@@ -83,6 +84,7 @@ async def test_generate_writes_n_rows_one_event(
                 {"task_id": t2, "rank": 2, "reason": None},
             ],
             generated_by="hermes",
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as check:
         after = await _count_focus_events(check)
@@ -108,6 +110,7 @@ async def test_get_today_tasks_preserves_rank(
                 {"task_id": a, "rank": 1, "reason": "первый"},
             ],
             generated_by="hermes",
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as check:
         rows = await get_today_tasks(check, day)
@@ -129,6 +132,7 @@ async def test_generate_accepts_many_tasks(
             date=day,
             items=[{"task_id": t, "rank": i + 1, "reason": None} for i, t in enumerate(ids)],
             generated_by="hermes",
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as check:
         rows = await get_today_tasks(check, day)
@@ -149,11 +153,13 @@ async def test_regenerate_creates_new_version_read_latest(
         await generate_daily_focus(
             s, date=day, items=[{"task_id": old, "rank": 1, "reason": None}],
             generated_by="hermes",
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as s:
         await generate_daily_focus(
             s, date=day, items=[{"task_id": new, "rank": 1, "reason": None}],
             generated_by="hermes",
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as check:
         rows = await get_today_tasks(check, day)
@@ -190,6 +196,7 @@ async def test_focus_now_top_rank_and_raises_if_empty(
                 {"task_id": top, "rank": 1, "reason": None},
             ],
             generated_by="hermes",
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as check:
         row = await focus_now(check, day)

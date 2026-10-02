@@ -24,6 +24,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from novryn.db.models import BehaviorPattern, Event
+from novryn.domain.events import ActorType
 
 # Wave-2 целевые символы (ещё не существуют → RED при коллекции).
 from novryn.repositories.pattern_read import get_behavior_patterns
@@ -60,14 +61,16 @@ async def test_store_and_update(
     ptype = _unique_type("morning")
     async with uow_sessionmaker() as s:
         first_id = await pattern_store(
-            s, pattern_type=ptype, confidence=0.6, evidence_json={"n": 3}
+            s, pattern_type=ptype, confidence=0.6, evidence_json={"n": 3},
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as check:
         assert await _count_events(check, first_id, "pattern.stored") == 1
 
     async with uow_sessionmaker() as s:
         second_id = await pattern_store(
-            s, pattern_type=ptype, confidence=0.85, evidence_json={"n": 7}
+            s, pattern_type=ptype, confidence=0.85, evidence_json={"n": 7},
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     assert second_id == first_id  # in-place
     async with uow_sessionmaker() as check:
@@ -85,9 +88,15 @@ async def test_get_patterns_filter_sort(
     hi = _unique_type("hi")
     lo = _unique_type("lo")
     async with uow_sessionmaker() as s:
-        await pattern_store(s, pattern_type=hi, confidence=0.9, evidence_json={})
+        await pattern_store(
+            s, pattern_type=hi, confidence=0.9, evidence_json={},
+            actor_type=ActorType.HERMES, actor_id=None,
+        )
     async with uow_sessionmaker() as s:
-        await pattern_store(s, pattern_type=lo, confidence=0.2, evidence_json={})
+        await pattern_store(
+            s, pattern_type=lo, confidence=0.2, evidence_json={},
+            actor_type=ActorType.HERMES, actor_id=None,
+        )
 
     async with uow_sessionmaker() as check:
         # min_confidence отсекает низкоуверенный паттерн.
@@ -112,7 +121,8 @@ async def test_pattern_timestamps(
     ptype = _unique_type("ts")
     async with uow_sessionmaker() as s:
         pid = await pattern_store(
-            s, pattern_type=ptype, confidence=0.5, evidence_json={}
+            s, pattern_type=ptype, confidence=0.5, evidence_json={},
+            actor_type=ActorType.HERMES, actor_id=None,
         )
     async with uow_sessionmaker() as check:
         row = await check.get(BehaviorPattern, pid)
