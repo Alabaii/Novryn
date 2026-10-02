@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from novryn.db.ids import new_id
 from novryn.db.models import DailyFocus
-from novryn.domain.events import ActorType, EventType
+from novryn.domain.events import EventType
 from novryn.repositories.event_repository import append_event
 
 
@@ -47,6 +47,8 @@ async def generate_daily_focus(
     *,
     date: datetime.date,
     items: list[dict[str, Any]],
+    actor_type: str,
+    actor_id: uuid.UUID | None,
     generated_by: str | None = None,
 ) -> uuid.UUID:
     """Записать снимок фокуса: N строк daily_focus + ОДНО focus.generated (D-03).
@@ -70,6 +72,10 @@ async def generate_daily_focus(
         session: свежая async-сессия (одна на операцию; Anti-Pattern 5).
         date: дата, на которую формируется снимок фокуса.
         items: список ``{"task_id", "rank", "reason"}`` — задачи снимка.
+        actor_type: автор снимка ('USER' | 'HERMES' | 'SYSTEM') — пишется в событие
+            как есть. Задаётся вызывающим (MCP-слой берёт его из токена, PERM-04),
+            а не подставляется сервисом.
+        actor_id: id автора или None (SYSTEM/seed).
         generated_by: источник решения (пишется в строки daily_focus).
 
     Returns:
@@ -121,8 +127,8 @@ async def generate_daily_focus(
             event_type=EventType.FOCUS_GENERATED,
             entity_type="daily_focus",
             entity_id=entity_id,
-            actor_type=ActorType.HERMES,
-            actor_id=None,
+            actor_type=actor_type,
+            actor_id=actor_id,
             payload_json={
                 "date": date.isoformat(),
                 "generated_by": generated_by,
