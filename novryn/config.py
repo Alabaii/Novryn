@@ -1,4 +1,4 @@
-"""Конфигурация подключения к БД из окружения (.env).
+"""Конфигурация из окружения (.env): подключение к БД, глубина дерева, часовой пояс.
 
 Секреты не хардкодятся (CLAUDE.md: secrets из env; threat T-01-06). `DATABASE_URL`
 читается из переменных окружения; в dev-режиме `.env` подгружается через
@@ -7,6 +7,7 @@
 """
 
 import os
+import zoneinfo
 
 from dotenv import load_dotenv
 
@@ -17,6 +18,9 @@ _ASYNCPG_PREFIX = "postgresql+asyncpg://"
 
 # Предел глубины дерева задач по умолчанию (D-12: реальные деревья мельче ~10).
 _DEFAULT_TREE_MAX_DEPTH = 10
+
+# Часовой пояс пользователя по умолчанию — как у контейнеров Docker.
+_DEFAULT_TIMEZONE = "UTC"
 
 
 def get_database_url() -> str:
@@ -64,3 +68,27 @@ def get_tree_max_depth() -> int:
     if raw is None:
         return _DEFAULT_TREE_MAX_DEPTH
     return int(raw)
+
+
+def get_timezone() -> zoneinfo.ZoneInfo:
+    """Вернуть часовой пояс пользователя (``NOVRYN_TIMEZONE``, IANA-имя).
+
+    В нём считается «сегодня» — например, фокус дня без явной даты. По умолчанию
+    ``UTC``: так живут контейнеры Docker, и без настройки после полуночи по местному
+    времени «сегодня» было бы ещё «вчера».
+
+    Returns:
+        ``ZoneInfo`` пояса, например ``Europe/Moscow``.
+
+    Raises:
+        ValueError: если имя пояса неизвестно или некорректно — ошибка настройки
+            должна остановить запуск, а не тихо сдвинуть даты.
+    """
+    name = os.environ.get("NOVRYN_TIMEZONE", _DEFAULT_TIMEZONE)
+    try:
+        return zoneinfo.ZoneInfo(name)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError(
+            f"NOVRYN_TIMEZONE: неизвестный часовой пояс {name!r}; "
+            "нужно IANA-имя, например Europe/Moscow"
+        ) from exc
