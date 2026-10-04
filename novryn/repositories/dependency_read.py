@@ -48,21 +48,29 @@ async def is_reachable(
 async def get_dependencies(
     session: AsyncSession, task_id: uuid.UUID
 ) -> list[TaskDependency]:
-    """Активные зависимости задачи (``deleted_at IS NULL``) — read, без события (DEP-03)."""
+    """Активные зависимости задачи (``deleted_at IS NULL``) — read, без события (DEP-03).
+
+    Порядок — по созданию (``created_at``, затем ``id``): ответ стабилен между вызовами.
+    """
     result = await session.execute(
         select(TaskDependency)
         .where(TaskDependency.task_id == task_id)
         .where(TaskDependency.deleted_at.is_(None))
+        .order_by(TaskDependency.created_at, TaskDependency.id)
     )
     return list(result.scalars().all())
 
 
 async def get_resources(session: AsyncSession, task_id: uuid.UUID) -> list[Attachment]:
-    """Активные вложения задачи (``deleted_at IS NULL``) — read, без события (ATCH-04)."""
+    """Активные вложения задачи (``deleted_at IS NULL``) — read, без события (ATCH-04).
+
+    Порядок — по созданию (``created_at``, затем ``id``): ответ стабилен между вызовами.
+    """
     result = await session.execute(
         select(Attachment)
         .where(Attachment.task_id == task_id)
         .where(Attachment.deleted_at.is_(None))
+        .order_by(Attachment.created_at, Attachment.id)
     )
     return list(result.scalars().all())
 

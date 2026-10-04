@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from collections.abc import Collection
 
 from sqlalchemy import ColumnElement, RowMapping, desc, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from novryn.db.models import Task
+from novryn.domain.errors import NotFoundError
 
 # Потолок размера выдачи поиска (D-16): даже limit>200 ограничивается этим (DoS-guard).
 _SEARCH_LIMIT_CEILING = 200
@@ -26,6 +28,32 @@ _FTS_CONFIG = "russian"
 async def get_task(session: AsyncSession, task_id: uuid.UUID) -> Task | None:
     """Канонический ридер задачи по id — read, без события (TASK-04)."""
     return await session.get(Task, task_id)
+
+
+async def require_task(session: AsyncSession, task_id: uuid.UUID) -> Task:
+    """Задача по id или ``NotFoundError`` — для чтений, где отсутствие задачи — ошибка.
+
+    Пустой список зависимостей или сессий у несуществующей задачи потребитель принял бы
+    за «ничего нет»; явная ошибка честнее (как ``FocusNotFoundError`` в focus_read, D-04).
+    """
+    task = await get_task(session, task_id)
+    if task is None:
+        raise NotFoundError(task_id)
+    return task
+
+
+async def get_tasks_by_ids(
+    session: AsyncSession, task_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, Task]:
+    """Задачи по набору id ОДНИМ запросом (no N+1) — словарь ``id → задача``.
+
+    Для ответов, собранных из нескольких таблиц (например, фокус дня с названиями
+    задач). Несуществующих id в словаре нет.
+    """
+    if not task_ids:
+        return {}
+    result = await session.execute(select(Task).where(Task.id.in_(task_ids)))
+    return {task.id: task for task in result.scalars()}
 
 
 async def search_tasks(
