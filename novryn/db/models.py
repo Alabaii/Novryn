@@ -10,7 +10,7 @@ enum-CHECK и обязательные поля события. Модели —
 - Все timestamp-колонки — ``TIMESTAMPTZ`` (``DateTime(timezone=True)``);
   created_at/occurred_at имеют ``server_default=func.now()``.
 - Enum-поля — ``VARCHAR`` + именованный ``CHECK`` с каноническими значениями из
-  PRD/REQUIREMENTS (верхний регистр); native PG ENUM не используется (D-08).
+  ``novryn.domain.enums`` (верхний регистр); native PG ENUM не используется (D-08).
 - Имена CHECK-constraint стабильны (нужны для проверки в плане 03).
 - relationship с авто-lazy в async не объявляются (MissingGreenlet); для Фазы 1
   достаточно FK-колонок.
@@ -19,6 +19,7 @@ enum-CHECK и обязательные поля события. Модели —
 import datetime
 import decimal
 import uuid
+from typing import get_args
 
 from sqlalchemy import (
     CheckConstraint,
@@ -42,12 +43,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from novryn.db.base import Base
 from novryn.db.ids import new_id
+from novryn.domain.enums import AttachmentType, SessionResult, TaskEnergy, TaskStatus
 
-# Канонические enum-множества (PRD §4–§7; REQUIREMENTS). Верхний регистр (RESEARCH A1).
-_TASK_STATUS = ("INBOX", "TODO", "IN_PROGRESS", "BLOCKED", "DONE", "ARCHIVED")
-_TASK_ENERGY = ("LOW", "MEDIUM", "HIGH")
-_ATTACHMENT_TYPE = ("URL", "DOCUMENT", "PDF", "GITHUB", "GOOGLE_DOC", "OTHER")
-_SESSION_RESULT = ("COMPLETED", "PARTIAL", "ABANDONED", "INTERRUPTED")
+# Канонические enum-множества (PRD §4–§7) — из доменных Literal-типов, единого
+# источника истины для CHECK в БД и схем MCP-инструментов. Верхний регистр (RESEARCH A1).
+_TASK_STATUS: tuple[str, ...] = get_args(TaskStatus)
+_TASK_ENERGY: tuple[str, ...] = get_args(TaskEnergy)
+_ATTACHMENT_TYPE: tuple[str, ...] = get_args(AttachmentType)
+_SESSION_RESULT: tuple[str, ...] = get_args(SessionResult)
 _EVENT_ACTOR_TYPE = ("USER", "HERMES", "SYSTEM")
 # Держатель токена доступа: только реальные акторы. SYSTEM — это действия оператора
 # с прямым доступом к БД (CLI, миграции), токен ему не нужен.
